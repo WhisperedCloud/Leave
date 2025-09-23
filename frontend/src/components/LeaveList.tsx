@@ -2,54 +2,87 @@ import React from "react";
 import api from "../services/api";
 import { useAuth } from "../Context/AuthContext";
 
-const LeaveList: React.FC<{ leaves: any[]; onAction?: () => void }> = ({ leaves, onAction }) => {
+interface LeaveListProps {
+  leaves: any[];
+  userRole?: string;
+  refresh: () => void;
+}
+
+const LeaveList: React.FC<LeaveListProps> = ({ leaves, userRole, refresh }) => {
   const { user } = useAuth();
 
-  const act = async (id: string, status: "Approved" | "Rejected") => {
+  const handleApproveReject = async (id: string, status: "Approved" | "Rejected") => {
     try {
-      await api.patch("/leaves/" + id, { status });
-      onAction && onAction();
-    } catch (err: any) {
-      alert(err?.response?.data?.message || "Error");
+      await api.patch(`/leaves/${id}`, { status });
+      refresh();
+    } catch (err) {
+      console.error(err);
     }
   };
 
   return (
-    <div className="bg-white rounded shadow p-4">
-      <h3 className="font-semibold mb-2">Leave Requests</h3>
-      <table className="w-full table-auto">
-        <thead>
-          <tr>
-            <th className="text-left">User</th>
-            <th className="text-left">Role</th>
-            <th>From</th>
-            <th>To</th>
-            <th className="text-left">Reason</th>
-            <th>Status</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {leaves.map(l => (
-            <tr key={l._id} className="border-t">
-              <td>{l.user?.name || "—"}</td>
-              <td>{l.role}</td>
-              <td>{new Date(l.startDate).toLocaleDateString()}</td>
-              <td>{new Date(l.endDate).toLocaleDateString()}</td>
-              <td>{l.reason}</td>
-              <td>{l.status}</td>
-              <td>
-                {(user?.role === "Admin" || user?.role === "HR" || user?.role === "Manager") && l.status === "Pending" ? (
-                  <>
-                    <button onClick={() => act(l._id, "Approved")} className="mr-2 px-2 py-1 bg-green-200 rounded">Approve</button>
-                    <button onClick={() => act(l._1d || l._id, "Rejected")} className="px-2 py-1 bg-red-200 rounded">Reject</button>
-                  </>
-                ) : "—"}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="space-y-4">
+      {leaves.map((leave) => {
+        const isOwnLeave = leave.user._id === user?._id;
+        const canAct =
+          (userRole === "Manager" && leave.stage === "Manager") ||
+          (userRole === "HR" && leave.stage === "HR" && leave.user.role !== "HR") ||
+          (userRole === "Admin" && leave.stage === "HR" && leave.user.role === "HR");
+
+        return (
+          <div
+            key={leave._id}
+            className="bg-white border rounded-lg p-4 shadow hover:shadow-lg transition flex flex-col md:flex-row justify-between items-start md:items-center"
+          >
+            {/* Leave Info */}
+            <div className="flex flex-col md:flex-row md:items-center gap-4 w-full">
+              <div>
+                <div className="font-semibold text-purple-700">{leave.user.name}</div>
+                {userRole === "Admin" && (
+                  <div className="text-sm text-gray-500">Role: {leave.user.role}</div>
+                )}
+              </div>
+              <div>
+                <div className="text-sm text-gray-600">{leave.leaveType} Leave</div>
+                <div className="text-sm text-gray-500">
+                  {new Date(leave.startDate).toLocaleDateString()} - {new Date(leave.endDate).toLocaleDateString()}
+                </div>
+              </div>
+              <div className="text-sm text-gray-700">{leave.reason}</div>
+            </div>
+
+            {/* Status & Actions */}
+            <div className="flex flex-col md:flex-row md:items-center gap-2 mt-2 md:mt-0">
+              <div
+                className={`font-medium ${
+                  leave.status === "Approved" ? "text-green-600" :
+                  leave.status === "Rejected" ? "text-red-600" : "text-yellow-600"
+                }`}
+              >
+                {leave.status}
+              </div>
+
+              {/* Approve/Reject buttons */}
+              {!isOwnLeave && canAct && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleApproveReject(leave._id, "Approved")}
+                    className="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 transition"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => handleApproveReject(leave._id, "Rejected")}
+                    className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 transition"
+                  >
+                    Reject
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 };

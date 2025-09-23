@@ -7,13 +7,8 @@ import authRoutes from "./routes/auth";
 import userRoutes from "./routes/users";
 import leaveRoutes from "./routes/leaves";
 import errorHandler from "./middleware/errorHandler";
-import roleLeaveRouter from "./models/RoleLeave"
-
-
-
 
 const PORT = process.env.PORT || 4000;
-
 connectDB();
 
 const app = express();
@@ -23,10 +18,6 @@ app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/leaves", leaveRoutes);
-app.use("/dashboard", roleLeaveRouter);
-
 app.use(errorHandler);
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

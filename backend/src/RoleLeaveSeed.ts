@@ -9,6 +9,7 @@ const roles = [
   { role: "Intern", leaveBalance: { Normal: 6, Sick: 3, Emergency: 2 } },
 ];
 
+
 async function seed() {
   try {
     await mongoose.connect(

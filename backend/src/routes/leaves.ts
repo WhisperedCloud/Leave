@@ -1,25 +1,20 @@
 import express from "express";
 import { body, validationResult } from "express-validator";
-import Leave from "../models/Leave";
+import Leave, { ILeave } from "../models/Leave";
 import User from "../models/User";
-import RoleLeave from "../models/RoleLeave"; 
 import { authenticate, authorize, AuthRequest } from "../middleware/auth";
 import mongoose from "mongoose";
 
 const router = express.Router();
 
-/**
- * Helper: Calculate number of days between two dates (inclusive)
- */
+// Helper to calculate leave days
 function calculateLeaveDays(start: string, end: string): number {
   const s = new Date(start);
   const e = new Date(end);
   return Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
 }
 
-/**
- * POST /api/leaves → Request leave
- */
+// ===================== APPLY LEAVE =====================
 router.post(
   "/",
   authenticate,
@@ -29,38 +24,34 @@ router.post(
     body("endDate").isISO8601(),
     body("reason").isLength({ min: 3 }),
   ],
-  async (req: AuthRequest, res: express.Response, next: express.NextFunction) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  async (req: AuthRequest, res: express.Response) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
+    try {
       const { leaveType, startDate, endDate, reason } = req.body;
       const user = await User.findById(req.user!.id);
-      if (!user) return res.status(400).json({ message: "User not found" });
+      if (!user) return res.status(404).json({ message: "User not found" });
 
-      if (user.role === "Admin") {
-        return res.status(403).json({ message: "Admins cannot request leave" });
-      }
-
-      // Validate date range
-      if (new Date(endDate) < new Date(startDate)) {
+      if (new Date(endDate) < new Date(startDate))
         return res.status(400).json({ message: "End date cannot be before start date" });
-      }
 
-      // Calculate leave days
       const days = calculateLeaveDays(startDate, endDate);
-
-      // Check balance
       const typeKey = leaveType as keyof typeof user.leaveBalance;
-      if (user.leaveBalance[typeKey] < days) {
-        return res.status(400).json({ message: `Not enough ${leaveType} leaves remaining.` });
-      }
 
-      // Determine approval stage
-      let stage: "Manager" | "HR" | "Admin" = "Manager";
-      if (leaveType === "Sick" || leaveType === "Emergency") stage = "HR";
-      if (user.role === "Manager") stage = "HR";
-      if (user.role === "HR") stage = "Admin";
+      if (!user.leaveBalance[typeKey] || user.leaveBalance[typeKey] < days)
+        return res.status(400).json({ message: `Not enough ${leaveType} leave remaining.` });
+
+      // Deduct leave immediately
+      user.leaveBalance[typeKey] -= days;
+      await user.save();
+
+      // Determine initial stage
+      let stage: "Manager" | "HR" | "Completed" = "Manager";
+
+      if (leaveType === "Emergency" || leaveType === "Sick") stage = "HR"; // Skip Manager
+      if (user.role === "HR") stage = "HR"; // HR leave goes to Admin directly
+      if (user.role === "Manager") stage = "HR"; // Manager leave goes directly to HR
 
       const leave = new Leave({
         user: user._id,
@@ -77,110 +68,129 @@ router.post(
       await leave.save();
       res.status(201).json(leave);
     } catch (err) {
-      next(err);
+      console.error(err);
+      res.status(500).json({ message: "Server error while applying leave" });
     }
   }
 );
 
-/**
- * PATCH /api/leaves/:id → Approve/Reject leave
- */
-router.patch("/:id", authenticate, authorize(["Admin", "HR", "Manager"]), async (req: AuthRequest, res, next) => {
+// ===================== APPROVE / REJECT =====================
+router.patch("/:id", authenticate, authorize(["Admin", "HR", "Manager"]), async (req: AuthRequest, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  if (!["Approved", "Rejected"].includes(status))
+    return res.status(400).json({ message: "Invalid status" });
+
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ message: "Invalid ID" });
+
   try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid leave ID" });
-    if (!["Approved", "Rejected"].includes(status)) return res.status(400).json({ message: "Invalid status" });
-
     const leave = await Leave.findById(id).populate("user");
     if (!leave) return res.status(404).json({ message: "Leave not found" });
 
-    if (leave.stage === "Completed") {
-      return res.status(400).json({ message: "Leave process already completed" });
-    }
-
     const leaveUser = leave.user as any;
 
-    if (leaveUser._id.toString() === req.user!.id) {
-      return res.status(403).json({ message: "Cannot approve your own leave" });
+    // Role-based validations
+    if (req.user!.role === "Manager" && leave.stage !== "Manager")
+      return res.status(403).json({ message: "Manager cannot approve this leave" });
+
+    if (req.user!.role === "HR") {
+      if (leave.stage !== "HR" || leaveUser.role === "HR")
+        return res.status(403).json({ message: "HR cannot approve this leave" });
     }
 
-    // Approval Flow
-    if (req.user!.role === "Manager" && leave.stage === "Manager" && leave.leaveType === "Normal") {
-      leave.approvals.push({ role: "Manager", approver: req.user!._id, status, date: new Date() });
-      if (status === "Approved") {
-        leave.stage = "HR";
-        leave.status = "Pending";
-      } else {
-        leave.stage = "Completed";
-        leave.status = "Rejected";
-      }
+    if (req.user!.role === "Admin") {
+      if (leaveUser.role !== "HR")
+        return res.status(403).json({ message: "Admin can approve only HR leaves" });
+      if (leave.stage === "Completed")
+        return res.status(403).json({ message: "Leave already completed" });
     }
 
-    else if (req.user!.role === "HR" && leave.stage === "HR") {
-      leave.approvals.push({ role: "HR", approver: req.user!._id, status, date: new Date() });
-      if (status === "Approved") {
-        leave.stage = "Admin";
-        leave.status = "Pending";
-      } else {
-        leave.stage = "Completed";
-        leave.status = "Rejected";
-      }
-    }
+    // Add approval
+    leave.approvals.push({
+      role: req.user!.role,
+      approver: new mongoose.Types.ObjectId(req.user!.id),
+      status,
+      date: new Date(),
+    });
 
-    else if (req.user!.role === "Admin" && leave.stage === "Admin") {
-      leave.approvals.push({ role: "Admin", approver: req.user!._id, status, date: new Date() });
-      leave.stage = "Completed";
-      leave.status = status;
+    // Update stage & status
+    if (status === "Approved") {
+      if (leave.stage === "Manager") leave.stage = "HR";
+      else leave.stage = "Completed";
 
-      // Deduct leave balance only if Approved
-      if (status === "Approved" && leaveUser) {
-        const days = calculateLeaveDays(leave.startDate.toISOString(), leave.endDate.toISOString());
-        const user = await User.findById(leaveUser._id);
-        if (user) {
-          const type = leave.leaveType as keyof typeof user.leaveBalance;
-          if (user.leaveBalance[type] >= days) {
-            user.leaveBalance[type] -= days;
-            await user.save();
-          } else {
-            return res.status(400).json({ message: "User does not have enough leave balance" });
-          }
-        }
-
-        // Deduct from RoleLeave as well
-        const roleLeave = await RoleLeave.findOne({ role: leaveUser.role });
-        if (roleLeave) {
-          const type = leave.leaveType as keyof typeof roleLeave.leaveBalance;
-          if (roleLeave.leaveBalance[type] >= days) {
-            roleLeave.leaveBalance[type] -= days;
-            await roleLeave.save();
-          }
-        }
-      }
+      if (leave.stage === "Completed") leave.status = "Approved";
     } else {
-      return res.status(403).json({ message: "Not allowed at this stage" });
+      leave.stage = "Completed";
+      leave.status = "Rejected";
+
+      // Restore leave balance
+      const days = calculateLeaveDays(leave.startDate.toISOString(), leave.endDate.toISOString());
+      leaveUser.leaveBalance[leave.leaveType] += days;
+      await leaveUser.save();
     }
 
     await leave.save();
     res.json(leave);
   } catch (err) {
-    next(err);
+    console.error(err);
+    res.status(500).json({ message: "Server error while updating leave" });
   }
 });
 
-/**
- * GET /api/leaves/history → User's leave history
- */
-router.get("/history", authenticate, async (req: AuthRequest, res, next) => {
+// ===================== DASHBOARD LEAVES =====================
+router.get("/", authenticate, async (req: AuthRequest, res) => {
   try {
-    const leaves = await Leave.find({ user: req.user!.id })
-      .populate("approvals.approver", "name role")
-      .sort({ createdAt: -1 });
+    let leaves;
 
+    switch (req.user!.role) {
+      case "Admin":
+        // ✅ Admin sees all leaves from all roles
+        leaves = await Leave.find({}).populate("user", "name role email");
+        break;
+
+      case "HR":
+        // HR sees own leaves + manager leaves + employee leaves pending HR
+        leaves = await Leave.find({
+          $or: [
+            { user: req.user!.id }, 
+            { stage: "HR", role: { $ne: "HR" } }, 
+          ],
+        }).populate("user", "name role email");
+        break;
+
+      case "Manager":
+        // Manager sees own leaves + leaves waiting for manager approval
+        leaves = await Leave.find({
+          $or: [
+            { user: req.user!.id },
+            { stage: "Manager" },
+          ],
+        }).populate("user", "name role email");
+        break;
+
+      default:
+        // Employees/Interns see only their own leaves
+        leaves = await Leave.find({ user: req.user!.id });
+        break;
+    }
+
+    res.json(leaves.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error while fetching leaves" });
+  }
+});
+
+// ===================== ADMIN LEAVE HISTORY =====================
+router.get("/history", authenticate, authorize(["Admin"]), async (req, res) => {
+  try {
+    const leaves = await Leave.find({}).populate("user", "name role email").sort({ createdAt: -1 });
     res.json(leaves);
   } catch (err) {
-    next(err);
+    console.error(err);
+    res.status(500).json({ message: "Server error while fetching history" });
   }
 });
 
