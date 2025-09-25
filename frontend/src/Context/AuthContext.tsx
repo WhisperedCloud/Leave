@@ -18,11 +18,24 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
+  // ✅ Safe parsing for user
   const [user, setUser] = useState<User | null>(() => {
-    const raw = localStorage.getItem("user");
-    return raw ? JSON.parse(raw) : null;
+    try {
+      const raw = localStorage.getItem("user");
+      if (!raw || raw === "undefined") return null;
+      return JSON.parse(raw) as User;
+    } catch (err) {
+      console.error("Failed to parse user from localStorage:", err);
+      return null;
+    }
   });
-  const [token, setAuthToken] = useState<string | null>(() => localStorage.getItem("token"));
+
+  // ✅ Token just read as string
+  const [token, setAuthToken] = useState<string | null>(() => {
+    const raw = localStorage.getItem("token");
+    if (!raw || raw === "undefined") return null;
+    return raw;
+  });
 
   useEffect(() => {
     setToken(token);
@@ -31,8 +44,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const login = async (email: string, password: string) => {
     const res = await api.post("/auth/login", { email, password });
     const { token: t, user: u } = res.data;
+
     setAuthToken(t);
     setUser(u);
+
     localStorage.setItem("token", t);
     localStorage.setItem("user", JSON.stringify(u));
   };
@@ -45,7 +60,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     localStorage.removeItem("user");
   };
 
-  return <AuthContext.Provider value={{ user, token, login, logout }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, token, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
 };
 
 export const useAuth = () => {

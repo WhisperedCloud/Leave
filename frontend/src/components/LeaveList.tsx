@@ -6,9 +6,10 @@ interface LeaveListProps {
   leaves: any[];
   userRole?: string;
   refresh: () => void;
+  isOwnLeaves?: boolean; // new prop to distinguish section
 }
 
-const LeaveList: React.FC<LeaveListProps> = ({ leaves, userRole, refresh }) => {
+const LeaveList: React.FC<LeaveListProps> = ({ leaves, userRole, refresh, isOwnLeaves }) => {
   const { user } = useAuth();
 
   const handleApproveReject = async (id: string, status: "Approved" | "Rejected") => {
@@ -19,6 +20,14 @@ const LeaveList: React.FC<LeaveListProps> = ({ leaves, userRole, refresh }) => {
       console.error(err);
     }
   };
+
+  if (!leaves || leaves.length === 0) {
+    return (
+      <div className="text-gray-500 text-center py-4">
+        No leave requests
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -32,7 +41,11 @@ const LeaveList: React.FC<LeaveListProps> = ({ leaves, userRole, refresh }) => {
         return (
           <div
             key={leave._id}
-            className="bg-white border rounded-lg p-4 shadow hover:shadow-lg transition flex flex-col md:flex-row justify-between items-start md:items-center"
+            className={`border rounded-lg p-4 shadow hover:shadow-lg transition flex flex-col md:flex-row justify-between items-start md:items-center ${
+              isOwnLeaves
+                ? "bg-indigo-50" // slightly different for own leaves
+                : "bg-white"     // other employees' leaves
+            }`}
           >
             {/* Leave Info */}
             <div className="flex flex-col md:flex-row md:items-center gap-4 w-full">
@@ -62,7 +75,6 @@ const LeaveList: React.FC<LeaveListProps> = ({ leaves, userRole, refresh }) => {
                 {leave.status}
               </div>
 
-              {/* Approve/Reject buttons */}
               {!isOwnLeave && canAct && (
                 <div className="flex gap-2">
                   <button

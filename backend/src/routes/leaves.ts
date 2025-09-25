@@ -36,9 +36,22 @@ router.post(
       if (new Date(endDate) < new Date(startDate))
         return res.status(400).json({ message: "End date cannot be before start date" });
 
+      // Normal leave must be applied at least 7 days in advance
+      if (leaveType === "Normal") {
+        const today = new Date();
+        const start = new Date(startDate);
+        today.setHours(0, 0, 0, 0);
+        start.setHours(0, 0, 0, 0);
+        const diffDays = Math.ceil((start.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays < 7) {
+          return res
+            .status(400)
+            .json({ message: "Normal leave must be applied at least 7 days in advance." });
+        }
+      }
+
       const days = calculateLeaveDays(startDate, endDate);
       const typeKey = leaveType as keyof typeof user.leaveBalance;
-
       if (!user.leaveBalance[typeKey] || user.leaveBalance[typeKey] < days)
         return res.status(400).json({ message: `Not enough ${leaveType} leave remaining.` });
 
@@ -48,10 +61,9 @@ router.post(
 
       // Determine initial stage
       let stage: "Manager" | "HR" | "Completed" = "Manager";
-
-      if (leaveType === "Emergency" || leaveType === "Sick") stage = "HR"; // Skip Manager
-      if (user.role === "HR") stage = "HR"; // HR leave goes to Admin directly
-      if (user.role === "Manager") stage = "HR"; // Manager leave goes directly to HR
+      if (leaveType === "Emergency" || leaveType === "Sick") stage = "HR";
+      if (user.role === "HR") stage = "HR";
+      if (user.role === "Manager") stage = "HR";
 
       const leave = new Leave({
         user: user._id,
@@ -91,7 +103,6 @@ router.patch("/:id", authenticate, authorize(["Admin", "HR", "Manager"]), async 
 
     const leaveUser = leave.user as any;
 
-    // Role-based validations
     if (req.user!.role === "Manager" && leave.stage !== "Manager")
       return res.status(403).json({ message: "Manager cannot approve this leave" });
 
@@ -107,7 +118,6 @@ router.patch("/:id", authenticate, authorize(["Admin", "HR", "Manager"]), async 
         return res.status(403).json({ message: "Leave already completed" });
     }
 
-    // Add approval
     leave.approvals.push({
       role: req.user!.role,
       approver: new mongoose.Types.ObjectId(req.user!.id),
@@ -115,7 +125,6 @@ router.patch("/:id", authenticate, authorize(["Admin", "HR", "Manager"]), async 
       date: new Date(),
     });
 
-    // Update stage & status
     if (status === "Approved") {
       if (leave.stage === "Manager") leave.stage = "HR";
       else leave.stage = "Completed";
@@ -125,7 +134,6 @@ router.patch("/:id", authenticate, authorize(["Admin", "HR", "Manager"]), async 
       leave.stage = "Completed";
       leave.status = "Rejected";
 
-      // Restore leave balance
       const days = calculateLeaveDays(leave.startDate.toISOString(), leave.endDate.toISOString());
       leaveUser.leaveBalance[leave.leaveType] += days;
       await leaveUser.save();
@@ -146,22 +154,19 @@ router.get("/", authenticate, async (req: AuthRequest, res) => {
 
     switch (req.user!.role) {
       case "Admin":
-        // ✅ Admin sees all leaves from all roles
         leaves = await Leave.find({}).populate("user", "name role email");
         break;
 
       case "HR":
-        // HR sees own leaves + manager leaves + employee leaves pending HR
         leaves = await Leave.find({
           $or: [
-            { user: req.user!.id }, 
-            { stage: "HR", role: { $ne: "HR" } }, 
+            { user: req.user!.id },           // HR’s own leaves
+            { role: { $ne: "HR" } },          // All other employees’ leaves
           ],
         }).populate("user", "name role email");
         break;
 
       case "Manager":
-        // Manager sees own leaves + leaves waiting for manager approval
         leaves = await Leave.find({
           $or: [
             { user: req.user!.id },
@@ -171,7 +176,6 @@ router.get("/", authenticate, async (req: AuthRequest, res) => {
         break;
 
       default:
-        // Employees/Interns see only their own leaves
         leaves = await Leave.find({ user: req.user!.id });
         break;
     }

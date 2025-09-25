@@ -13,6 +13,8 @@ interface LeaveCounts {
 const Dashboard: React.FC = () => {
   const { user, logout } = useAuth();
   const [leaves, setLeaves] = useState<any[]>([]);
+  const [myLeaves, setMyLeaves] = useState<any[]>([]);
+  const [otherLeaves, setOtherLeaves] = useState<any[]>([]);
   const [leaveCounts, setLeaveCounts] = useState<LeaveCounts>({ Normal: 0, Sick: 0, Emergency: 0 });
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -21,21 +23,17 @@ const Dashboard: React.FC = () => {
     if (!user) return;
     try {
       setLoading(true);
-
-      // Fetch leaves relevant to the user role
       const leavesRes = await api.get("/leaves");
-      let allLeaves = leavesRes.data;
+      const allLeaves = leavesRes.data;
 
-      // For Manager: separate own leaves vs. pending approval leaves
-      if (user.role === "Manager") {
-        const ownLeaves = allLeaves.filter((l: any) => l.user._id === user.id);
-        const pendingLeaves = allLeaves.filter((l: any) => l.stage === "Manager" && l.user._id !== user.id);
-        allLeaves = [...ownLeaves, ...pendingLeaves];
+      // Separate own leaves and other leaves for HR/Manager
+      if (user.role === "HR" || user.role === "Manager") {
+        setMyLeaves(allLeaves.filter((l: any) => l.user._id === user.id));
+        setOtherLeaves(allLeaves.filter((l: any) => l.user._id !== user.id));
+      } else {
+        setLeaves(allLeaves);
       }
 
-      setLeaves(allLeaves);
-
-      // Fetch leave balance for non-admin users
       if (user.role !== "Admin") {
         const meRes = await api.get("/users/me");
         setLeaveCounts(meRes.data.leaveBalance || { Normal: 0, Sick: 0, Emergency: 0 });
@@ -88,30 +86,63 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Leave List & Apply Leave */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Apply Leave button for HR/Manager/Employee */}
-        {user && user.role !== "Admin" && (
-          <div className="md:col-span-1">
-            <button
-              disabled={!canApplyLeave || loading}
-              onClick={() => setShowModal(true)}
-              className={`w-full px-4 py-2 rounded text-white shadow transition ${
-                canApplyLeave && !loading
-                  ? "bg-indigo-500 hover:bg-indigo-600"
-                  : "bg-gray-400 cursor-not-allowed"
-              }`}
-            >
-              {loading ? "Loading..." : "Apply Leave"}
-            </button>
-          </div>
+      {/* Apply Leave Button */}
+      {user && user.role !== "Admin" && (
+        <div className="mb-6">
+          <button
+            disabled={!canApplyLeave || loading}
+            onClick={() => setShowModal(true)}
+            className={`px-4 py-2 rounded text-white shadow transition ${
+              canApplyLeave && !loading
+                ? "bg-indigo-500 hover:bg-indigo-600"
+                : "bg-gray-400 cursor-not-allowed"
+            }`}
+          >
+            {loading ? "Loading..." : "Apply Leave"}
+          </button>
+        </div>
+      )}
+
+      {/* Leaves Lists */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {(user?.role === "HR" || user?.role === "Manager") && (
+          <>
+            {/* Own Leaves */}
+            <div>
+              <h2 className="text-xl font-semibold mb-2">My Leaves</h2>
+              <div className="rounded-lg shadow p-4">
+                <LeaveList
+                  leaves={myLeaves}
+                  userRole={user?.role}
+                  refresh={fetchDashboardData}
+                  isOwnLeaves
+                />
+              </div>
+            </div>
+
+            {/* Other Employees' Leaves */}
+            <div>
+              <h2 className="text-xl font-semibold mb-2">Other Employees' Leaves</h2>
+              <div className="rounded-lg shadow p-4">
+                <LeaveList
+                  leaves={otherLeaves}
+                  userRole={user?.role}
+                  refresh={fetchDashboardData}
+                  isOwnLeaves={false}
+                />
+              </div>
+            </div>
+          </>
         )}
 
-        <div className={user && user.role !== "Admin" ? "md:col-span-2" : "md:col-span-3"}>
-          <div className="bg-white rounded-lg shadow p-4">
-            <LeaveList leaves={leaves} userRole={user?.role} refresh={fetchDashboardData} />
+        {/* For other users (Employee/Intern/Admin) */}
+        {!(user?.role === "HR" || user?.role === "Manager") && (
+          <div className="md:col-span-2">
+            <div className="bg-white rounded-lg shadow p-4">
+              <LeaveList leaves={leaves} userRole={user?.role} refresh={fetchDashboardData} />
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Apply Leave Modal */}
